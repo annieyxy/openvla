@@ -38,6 +38,8 @@ from experiments.robot.libero.libero_utils import (
     get_libero_image,
     quat2axisangle,
     save_rollout_video,
+    get_keep_objects,
+    hide_distractors,
 )
 from experiments.robot.openvla_utils import get_processor
 from experiments.robot.robot_utils import (
@@ -71,6 +73,8 @@ class GenerateConfig:
     task_suite_name: str = "libero_spatial"          # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     num_steps_wait: int = 10                         # Number of steps to wait for objects to stabilize in sim
     num_trials_per_task: int = 50                    # Number of rollouts per task
+    observation_mode: str = "clutter"                # Observation mode: clutter, clean
+    keep_goal_objects: bool = True                   # In clean mode, keep objects referenced in goal predicates visible
 
     #################################################################################################################
     # Utils
@@ -93,15 +97,20 @@ def eval_libero(cfg: GenerateConfig) -> None:
     if "image_aug" in cfg.pretrained_checkpoint:
         assert cfg.center_crop, "Expecting `center_crop==True` because model was trained with image augmentations!"
     assert not (cfg.load_in_8bit and cfg.load_in_4bit), "Cannot use both 8-bit and 4-bit quantization!"
+    assert cfg.observation_mode in {"clutter", "clean"}, "observation_mode must be one of: clutter, clean"
+    
 
     # Set random seed
     set_seed_everywhere(cfg.seed)
 
     # [OpenVLA] Set action un-normalization key
     cfg.unnorm_key = cfg.task_suite_name
+    # cfg.unnorm_key = "libero_10"
 
     # Load model
     model = get_model(cfg)
+    print(".......................................")
+    print("MODEL norm stats: ",model.norm_stats)
 
     # [OpenVLA] Check that the model contains the action un-normalization key
     if cfg.model_family == "openvla":
@@ -139,6 +148,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
     num_tasks_in_suite = task_suite.n_tasks
     print(f"Task suite: {cfg.task_suite_name}")
     log_file.write(f"Task suite: {cfg.task_suite_name}\n")
+    print(f"Observation mode: {cfg.observation_mode}")
+    log_file.write(f"Observation mode: {cfg.observation_mode}\n")
 
     # Get expected image dimensions
     resize_size = get_image_resize_size(cfg)
@@ -154,6 +165,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
         # Initialize LIBERO environment and task description
         env, task_description = get_libero_env(task, cfg.model_family, resolution=256)
+        keep_objects = None
+        if cfg.observation_mode == "clean":
+            keep_objects = get_keep_objects(env, keep_goal_objects=cfg.keep_goal_objects)
+            print(f"Clean mode keep objects: {sorted(keep_objects)}")
+            log_file.write(f"Clean mode keep objects: {sorted(keep_objects)}\n")
 
         # Start episodes
         task_episodes, task_successes = 0, 0
@@ -166,6 +182,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
             # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
+            if cfg.observation_mode == "clean":
+                hidden = hide_distractors(env, keep_objects=keep_objects)
+                print(f"Hidden distractors: {hidden}")
+                log_file.write(f"Hidden distractors: {hidden}\n")
 
             # Setup
             t = 0
@@ -284,3 +304,8 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
 if __name__ == "__main__":
     eval_libero()
+
+
+
+
+# example command: python -X faulthandler experiments/robot/libero/run_libero_eval.py   --model_family openvla   --pretrained_checkpoint openvla/openvla-7b-finetuned-libero-object   --task_suite_name libero_object   --center_crop True   --observation_mode clutter   --num_trials_per_task 1   --seed 7   --run_id_note debug_abort

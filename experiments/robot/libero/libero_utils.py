@@ -24,6 +24,58 @@ def get_libero_env(task, model_family, resolution=256):
     env.seed(0)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
 
+def _collect_goal_objects(parsed_problem):
+    """Extract object names referenced in goal predicates."""
+    goal_objects = set()
+    for state in parsed_problem.get("goal_state", []):
+        if len(state) >= 2 and isinstance(state[1], str):
+            goal_objects.add(state[1])
+        if len(state) >= 3 and isinstance(state[2], str):
+            goal_objects.add(state[2])
+    return goal_objects
+
+
+def get_keep_objects(env, keep_goal_objects=True):
+    """Objects kept visible in clean observation mode."""
+    keep_objects = set(env.obj_of_interest)
+    if keep_goal_objects:
+        keep_objects |= _collect_goal_objects(env.env.parsed_problem)
+    return keep_objects
+
+
+def _body_id2name(model, body_id):
+    """Resolve a MuJoCo body name from id across MuJoCo bindings."""
+    if hasattr(model, "body_id2name"):
+        return model.body_id2name(body_id)
+    if hasattr(model, "body_names"):
+        name = model.body_names[body_id]
+        return name.decode() if isinstance(name, (bytes, bytearray)) else name
+    raise RuntimeError("Unable to resolve body names from mujoco model")
+
+
+def _set_object_alpha(env, object_names, alpha=0.0):
+    """Set alpha for all geoms whose body names match object prefixes."""
+    model = env.sim.model
+    object_names = set(object_names)
+    for geom_id in range(model.ngeom):
+        body_id = model.geom_bodyid[geom_id]
+        body_name = _body_id2name(model, body_id)
+        if body_name is None:
+            continue
+        for obj_name in object_names:
+            if body_name.startswith(obj_name):
+                model.geom_rgba[geom_id][3] = alpha
+                break
+
+
+def hide_distractors(env, keep_objects):
+    """Hide non-target objects by setting alpha=0 for their geoms."""
+    all_objects = set(env.env.objects_dict.keys())
+    to_hide = [name for name in all_objects if name not in keep_objects]
+    if to_hide:
+        _set_object_alpha(env, to_hide, alpha=0.0)
+    return to_hide
+
 
 def get_libero_dummy_action(model_family: str):
     """Get dummy/no-op action, used to roll out the simulation while the robot does nothing."""
